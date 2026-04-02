@@ -47,7 +47,12 @@ acquire_lock() {
         error "Процесс зеркалирования уже запущен (PID $(cat "$LOCKFILE"))"
     fi
     echo $$ > "$LOCKFILE"
-    trap 'rm -f "$LOCKFILE"' EXIT INT TERM
+    trap 'enable_local_repos; rm -f "$LOCKFILE"' EXIT INT TERM
+}
+
+enable_local_repos() {
+    log "Включение локальных зеркал..."
+    sudo dnf config-manager --set-enabled 'local-*' >/dev/null 2>&1 || true
 }
 
 install_prerequisites() {
@@ -102,13 +107,13 @@ sync_repository() {
     local archs=""
     for a in "${SYNC_ARCHS[@]}"; do archs="$archs --arch=$a"; done
 
-    # Отключаем локальные репозитории, чтобы dnf не пытался синхронизироваться сам с собой
+    # В dnf5 --disablerepo нельзя использовать вместе с --repo.
+    # Мы отключаем их глобально перед началом синхронизации в main().
     sudo dnf reposync \
         --repo="$repo" $archs \
         --newest-only --nogpgcheck --norepopath \
         --download-path="$dir" --delete --download-metadata \
         --remote-time \
-        --disablerepo='local-*' \
         --setopt=max_parallel_downloads=20 \
         --setopt=deltarpm=False \
         2>&1 | tee -a "$LOG_FILE"
@@ -237,6 +242,10 @@ main() {
     enable_all_repositories
     check_disk_space
 
+    # Отключаем локальные зеркала перед синхронизацией, чтобы избежать конфликтов метаданных
+    log "Временное отключение локальных зеркал..."
+    sudo dnf config-manager --set-disabled 'local-*' 2>/dev/null || true
+
     for r in "${REPOS[@]}"; do sync_repository "$r"; done
 
     remove_old_versions
@@ -247,6 +256,7 @@ main() {
     done
 
     create_local_repo_config
+    enable_local_repos
     update_cache
     show_stats
 

@@ -47,27 +47,18 @@ acquire_lock() {
         error "Процесс зеркалирования уже запущен (PID $(cat "$LOCKFILE"))"
     fi
     echo $$ > "$LOCKFILE"
-    trap 'restore_priority; rm -f "$LOCKFILE"' EXIT INT TERM
+    trap 'enable_local_repos; rm -f "$LOCKFILE"' EXIT INT TERM
 }
 
-demote_priority() {
-    if [ ! -f "$LOCAL_REPO_CONF" ]; then
-        error "Файл конфигурации $LOCAL_REPO_CONF не найден. Сначала запустите setup-local-mirror.sh"
-    fi
-    log "Понижение приоритета локального зеркала через DNF..."
-    for repo in "${REPOS[@]}"; do
-        sudo dnf config-manager --save --setopt="local-$repo.priority=99" --setopt="local-$repo.cost=2000" >/dev/null 2>&1 || true
-    done
+disable_local_repos() {
+    log "Временное отключение локального зеркала через DNF..."
+    sudo dnf config-manager --set-disabled 'local-*' >/dev/null 2>&1 || true
     sudo dnf clean metadata >/dev/null 2>&1
 }
 
-restore_priority() {
-    if [ -f "$LOCAL_REPO_CONF" ]; then
-        log "Восстановление приоритета локального зеркала через DNF..."
-        for repo in "${REPOS[@]}"; do
-            sudo dnf config-manager --save --setopt="local-$repo.priority=5" --setopt="local-$repo.cost=1000" >/dev/null 2>&1 || true
-        done
-    fi
+enable_local_repos() {
+    log "Включение локального зеркала..."
+    sudo dnf config-manager --set-enabled 'local-*' >/dev/null 2>&1 || true
 }
 
 sync_repository() {
@@ -80,12 +71,12 @@ sync_repository() {
     for a in "${SYNC_ARCHS[@]}"; do archs="$archs --arch=$a"; done
 
     # Отключаем локальные репозитории для предотвращения конфликтов метаданных
+    # В dnf5 --disablerepo нельзя использовать вместе с --repo.
     sudo dnf reposync \
         --repo="$repo" $archs \
         --newest-only --nogpgcheck --norepopath \
         --download-path="$dir" --delete --download-metadata \
         --remote-time \
-        --disablerepo='local-*' \
         --setopt=max_parallel_downloads=20 \
         --setopt=deltarpm=False \
         2>&1 | tee -a "$LOG_FILE"
@@ -167,8 +158,8 @@ main() {
 
     acquire_lock
 
-    # 1. Понижаем приоритет локальных зеркал перед запуском обновления
-    demote_priority
+    # 1. Отключаем локальные зеркала перед запуском обновления в dnf
+    disable_local_repos
 
     for r in "${REPOS[@]}"; do sync_repository "$r"; done
 
@@ -179,8 +170,8 @@ main() {
         [ -d "$p" ] && create_metadata "$p"
     done
 
-    # 2. Восстанавливаем приоритет после обновления
-    restore_priority
+    # 2. Включаем обратно после обновления всего
+    enable_local_repos
 
     update_cache
     show_stats
