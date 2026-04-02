@@ -9,8 +9,14 @@
 # =============================================================================
 set -euo pipefail
 
+# Автоматически определяем версию Fedora
+if [ -f /etc/os-release ]; then
+    FEDORA_VERSION=$(source /etc/os-release && echo "$VERSION_ID")
+else
+    FEDORA_VERSION="43"
+fi
+
 MIRROR="/var/local/mirror"
-FEDORA_VERSION="43"
 LOG_FILE="/var/log/fedora-mirror-setup.log"
 MIN_SPACE_GB=150
 LOCKFILE="/var/run/fedora-mirror.lock"
@@ -96,11 +102,13 @@ sync_repository() {
     local archs=""
     for a in "${SYNC_ARCHS[@]}"; do archs="$archs --arch=$a"; done
 
+    # Отключаем локальные репозитории, чтобы dnf не пытался синхронизироваться сам с собой
     sudo dnf reposync \
         --repo="$repo" $archs \
         --newest-only --nogpgcheck --norepopath \
         --download-path="$dir" --delete --download-metadata \
         --remote-time \
+        --disablerepo='local-*' \
         --setopt=max_parallel_downloads=20 \
         --setopt=deltarpm=False \
         2>&1 | tee -a "$LOG_FILE"
@@ -132,11 +140,16 @@ create_metadata() {
     local path="$1"
     log "Метаданные: $path"
 
-    rm -rf "$path/repodata" 2>/dev/null
+    # Удаляем старые данные перед запуском, если они есть
+    sudo rm -rf "$path/repodata"
 
     local comp="gz"
-    createrepo_c --version 2>&1 | grep -qi zstd && command -v zstd >/dev/null && comp="zstd"
+    # Проверка поддержки zstd в createrepo_c
+    if createrepo_c --version 2>&1 | grep -qi zstd && command -v zstd >/dev/null; then
+        comp="zstd"
+    fi
 
+    # Используем zchunk и параллелизацию
     sudo createrepo_c --update --workers=auto --retain-old-md=0 --zchunk \
         --general-compress-type="$comp" --quiet "$path" 2>&1 | tee -a "$LOG_FILE"
 

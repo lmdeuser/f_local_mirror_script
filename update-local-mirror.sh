@@ -9,6 +9,13 @@
 # =============================================================================
 set -euo pipefail
 
+# Автоматически определяем версию Fedora
+if [ -f /etc/os-release ]; then
+    FEDORA_VERSION=$(source /etc/os-release && echo "$VERSION_ID")
+else
+    FEDORA_VERSION="43"
+fi
+
 MIRROR="/var/local/mirror"
 LOG_FILE="/var/log/fedora-mirror-update.log"
 LOCKFILE="/var/run/fedora-mirror.lock"
@@ -72,11 +79,13 @@ sync_repository() {
     local archs=""
     for a in "${SYNC_ARCHS[@]}"; do archs="$archs --arch=$a"; done
 
+    # Отключаем локальные репозитории для предотвращения конфликтов метаданных
     sudo dnf reposync \
         --repo="$repo" $archs \
         --newest-only --nogpgcheck --norepopath \
         --download-path="$dir" --delete --download-metadata \
         --remote-time \
+        --disablerepo='local-*' \
         --setopt=max_parallel_downloads=20 \
         --setopt=deltarpm=False \
         2>&1 | tee -a "$LOG_FILE"
@@ -107,7 +116,9 @@ remove_old_versions() {
 create_metadata() {
     local path="$1"
     log "Метаданные: $path"
-    rm -rf "$path/repodata" 2>/dev/null
+    
+    # Полностью пересоздаем метаданные для надежности
+    sudo rm -rf "$path/repodata"
 
     local comp="gz"
     if createrepo_c --version 2>&1 | grep -qi zstd && command -v zstd >/dev/null; then
